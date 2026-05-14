@@ -494,6 +494,85 @@ func (s *Syncer) HasState() bool {
 	return !s.state.IsEmpty()
 }
 
+// MigrateResult describes the outcome of a remote key migration.
+type MigrateResult struct {
+	Migrated []string // old keys that were re-uploaded with normalized keys
+	Deleted  []string // old keys that were deleted (normalized version already existed)
+	Skipped  []string // keys that were already normalized
+	Errors   []error
+}
+
+// MigrateRemoteKeys finds legacy project keys in remote storage (those using
+// literal home directory slugs instead of ${HOME}) and replaces them with
+// normalized keys. If a normalized version already exists, the legacy key is
+// simply deleted. Otherwise the data is downloaded and re-uploaded under the
+// normalized key before deleting the old one.
+func (s *Syncer) MigrateRemoteKeys(ctx context.Context, dryRun bool) (*MigrateResult, error) {
+	result := &MigrateResult{}
+
+	objects, err := s.storage.List(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote objects: %w", err)
+	}
+
+	// Build a set of all existing keys for quick lookup
+	existingKeys := make(map[string]bool, len(objects))
+	for _, obj := range objects {
+		existingKeys[obj.Key] = true
+	}
+
+	for _, obj := range objects {
+		if !s.pathMapper.IsLegacyProjectKey(obj.Key) {
+			result.Skipped = append(result.Skipped, obj.Key)
+			continue
+		}
+
+		// Compute what the normalized key should be
+		stripped := strings.TrimSuffix(obj.Key, ".age")
+		normalizedPath := s.pathMapper.NormalizeRemoteKey(stripped)
+		normalizedKey := normalizedPath + ".age"
+
+		// If normalization didn't change the key (e.g., project belongs to a
+		// different machine's home dir that we can't normalize), skip it
+		if normalizedKey == obj.Key {
+			result.Skipped = append(result.Skipped, obj.Key)
+			continue
+		}
+
+		if dryRun {
+			result.Migrated = append(result.Migrated, obj.Key)
+			continue
+		}
+
+		if existingKeys[normalizedKey] {
+			// Normalized version already exists — just delete the legacy key
+			if err := s.storage.Delete(ctx, obj.Key); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("delete %s: %w", obj.Key, err))
+				continue
+			}
+			result.Deleted = append(result.Deleted, obj.Key)
+		} else {
+			// Download, re-upload with normalized key, then delete old key
+			data, err := s.storage.Download(ctx, obj.Key)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("download %s: %w", obj.Key, err))
+				continue
+			}
+			if err := s.storage.Upload(ctx, normalizedKey, data); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("upload %s: %w", normalizedKey, err))
+				continue
+			}
+			if err := s.storage.Delete(ctx, obj.Key); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("delete %s: %w", obj.Key, err))
+				continue
+			}
+			result.Migrated = append(result.Migrated, obj.Key)
+		}
+	}
+
+	return result, nil
+}
+
 // FilePreview represents a file that would be affected by a pull operation
 type FilePreview struct {
 	Path       string

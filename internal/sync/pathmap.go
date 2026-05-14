@@ -154,6 +154,24 @@ func (pm *PathMapper) IsProjectPath(relPath string) bool {
 	return strings.HasPrefix(relPath, "projects/")
 }
 
+// IsLegacyProjectKey returns true if the key is a project path that uses a
+// literal home directory slug instead of the ${HOME} placeholder. These keys
+// were created before cross-device normalization was added.
+func (pm *PathMapper) IsLegacyProjectKey(key string) bool {
+	stripped := strings.TrimSuffix(key, ".age")
+	if !pm.IsProjectPath(stripped) {
+		return false
+	}
+	// Already normalized — not legacy
+	if strings.Contains(stripped, homePlaceholder) {
+		return false
+	}
+	// Check if it starts with projects/ followed by a dash-encoded path
+	// (all Claude Code project dirs start with a dash)
+	after := strings.TrimPrefix(stripped, "projects/")
+	return len(after) > 0 && after[0] == '-'
+}
+
 // replaceSlugPrefix replaces oldPrefix with newPrefix in slug, but only if
 // oldPrefix appears as a proper prefix — meaning it's followed by "-" (next
 // path segment) or is the entire slug. This prevents "-Users-merv" from

@@ -879,3 +879,95 @@ func TestCrossDeviceProjectSync_LegacyKeyPassthrough(t *testing.T) {
 		t.Errorf("Legacy content should be preserved, got: %s", got)
 	}
 }
+
+func TestMigrateRemoteKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	keyPath := filepath.Join(tmpDir, "age-key.txt")
+	if err := crypto.GenerateKeyFromPassphrase(keyPath, "migrate-test"); err != nil {
+		t.Fatalf("Failed to generate key: %v", err)
+	}
+	enc, err := crypto.NewEncryptor(keyPath)
+	if err != nil {
+		t.Fatalf("Failed to create encryptor: %v", err)
+	}
+
+	store := newMockStorage()
+	ctx := context.Background()
+
+	// Upload some legacy keys (literal home dir paths)
+	for _, key := range []string{
+		"projects/-Users-merv-nexura/memory/MEMORY.md.age",
+		"projects/-Users-merv-nexura/abc.jsonl.age",
+		"projects/-Users-mervynlally-nexura/memory/deploy.md.age",
+	} {
+		data, _ := enc.Encrypt([]byte("content for " + key))
+		store.Upload(ctx, key, data)
+	}
+
+	// Upload a normalized key (should be skipped)
+	normalized, _ := enc.Encrypt([]byte("already normalized"))
+	store.Upload(ctx, "projects/${HOME}-nexura/memory/new.md.age", normalized)
+
+	// Upload a non-project key (should be skipped)
+	nonProject, _ := enc.Encrypt([]byte("settings"))
+	store.Upload(ctx, "settings.json.age", nonProject)
+
+	// Create syncer with /Users/merv as home dir
+	deviceDir := filepath.Join(tmpDir, "device", ".claude")
+	deviceStateDir := filepath.Join(tmpDir, "device", ".claude-sync")
+	os.MkdirAll(deviceDir, 0700)
+	os.MkdirAll(deviceStateDir, 0700)
+	state, _ := LoadStateFromDir(deviceStateDir)
+	syncer := &Syncer{
+		storage:    store,
+		encryptor:  enc,
+		state:      state,
+		claudeDir:  deviceDir,
+		quiet:      true,
+		cfg:        &config.Config{},
+		pathMapper: NewPathMapper("/Users/merv"),
+	}
+
+	// Dry run first
+	dryResult, err := syncer.MigrateRemoteKeys(ctx, true)
+	if err != nil {
+		t.Fatalf("Dry run failed: %v", err)
+	}
+	// Should identify the 2 keys owned by /Users/merv as migratable
+	// The -Users-mervynlally key can't be normalized by this machine
+	if len(dryResult.Migrated) != 2 {
+		t.Errorf("Dry run: expected 2 migratable, got %d: %v", len(dryResult.Migrated), dryResult.Migrated)
+	}
+	// Verify nothing actually changed
+	allKeys := store.ListKeys()
+	if len(allKeys) != 5 {
+		t.Errorf("Dry run should not change storage: expected 5 keys, got %d", len(allKeys))
+	}
+
+	// Real migration
+	result, err := syncer.MigrateRemoteKeys(ctx, false)
+	if err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		t.Errorf("Unexpected errors: %v", result.Errors)
+	}
+	// 2 legacy keys from /Users/merv migrated
+	if len(result.Migrated) != 2 {
+		t.Errorf("Expected 2 migrated, got %d: %v", len(result.Migrated), result.Migrated)
+	}
+
+	// Verify old keys are gone and normalized keys exist
+	finalKeys := store.ListKeys()
+	for _, key := range finalKeys {
+		if strings.Contains(key, "-Users-merv-") && strings.HasPrefix(key, "projects/") {
+			t.Errorf("Legacy key should be deleted: %s", key)
+		}
+	}
+	// Should have: 2 normalized merv keys, 1 mervynlally legacy (can't migrate), 1 already-normalized, 1 settings
+	if len(finalKeys) != 5 {
+		t.Errorf("Expected 5 final keys, got %d: %v", len(finalKeys), finalKeys)
+	}
+}

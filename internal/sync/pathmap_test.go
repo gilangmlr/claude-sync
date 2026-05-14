@@ -391,6 +391,37 @@ func TestLinuxPaths(t *testing.T) {
 	}
 }
 
+func TestIsLegacyProjectKey(t *testing.T) {
+	pm := NewPathMapper("/Users/merv")
+
+	tests := []struct {
+		key      string
+		expected bool
+	}{
+		// Legacy keys (literal home dir, no ${HOME})
+		{"projects/-Users-merv-nexura/memory/MEMORY.md.age", true},
+		{"projects/-Users-mervynlally-nexura/file.txt.age", true},
+		{"projects/-Users-alice-code/session.jsonl.age", true},
+		// Already normalized — not legacy
+		{"projects/${HOME}-nexura/memory/MEMORY.md.age", false},
+		// Non-project paths
+		{"CLAUDE.md.age", false},
+		{"settings.json.age", false},
+		{"agents/helper.md.age", false},
+		// MCP external files
+		{"_external/mcp-servers.json.age", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			result := pm.IsLegacyProjectKey(tt.key)
+			if result != tt.expected {
+				t.Errorf("IsLegacyProjectKey(%q) = %v, want %v", tt.key, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestEmptyHomeDir(t *testing.T) {
 	pm := NewPathMapper("")
 
