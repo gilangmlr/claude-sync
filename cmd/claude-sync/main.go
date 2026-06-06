@@ -1202,7 +1202,8 @@ Examples:
   claude-sync conflicts              # Interactive resolution
   claude-sync conflicts --list       # Just list conflicts
   claude-sync conflicts --keep local # Keep all local versions
-  claude-sync conflicts --keep remote # Keep all remote versions`,
+  claude-sync conflicts --keep remote # Keep all remote versions
+  claude-sync conflicts --keep merge  # Merge all .jsonl conflicts (union)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			claudeDir := config.ClaudeDir()
 
@@ -1248,7 +1249,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVarP(&listOnly, "list", "l", false, "Only list conflicts, don't resolve")
-	cmd.Flags().StringVar(&resolveAll, "keep", "", "Resolve all conflicts: 'local' or 'remote'")
+	cmd.Flags().StringVar(&resolveAll, "keep", "", "Resolve all conflicts: 'local', 'remote', or 'merge' (jsonl union)")
 
 	return cmd
 }
@@ -1328,12 +1329,28 @@ func mergeConflictFile(c conflictFile, claudeDir string, state *sync.SyncState) 
 
 func batchResolveConflicts(conflicts []conflictFile, keep string, claudeDir string, state *sync.SyncState) error {
 	keep = strings.ToLower(keep)
-	if keep != "local" && keep != "remote" {
-		return fmt.Errorf("--keep must be 'local' or 'remote'")
+	if keep != "local" && keep != "remote" && keep != "merge" {
+		return fmt.Errorf("--keep must be 'local', 'remote', or 'merge'")
 	}
 
 	resolved := 0
+	skipped := 0
 	for _, c := range conflicts {
+		if keep == "merge" {
+			if !isJSONLPath(c.OriginalPath) {
+				fmt.Printf("%s→%s Skipped (not .jsonl): %s\n", colorDim, colorReset, filepath.Base(c.OriginalPath))
+				skipped++
+				continue
+			}
+			if err := mergeConflictFile(c, claudeDir, state); err != nil {
+				fmt.Printf("%s→%s Skipped (cannot merge: %v): %s\n", colorDim, colorReset, err, filepath.Base(c.OriginalPath))
+				skipped++
+				continue
+			}
+			fmt.Printf("%s✓%s Merged: %s\n", colorGreen, colorReset, filepath.Base(c.OriginalPath))
+			resolved++
+			continue
+		}
 		if keep == "local" {
 			// Delete conflict file, keep local
 			if err := os.Remove(c.ConflictPath); err != nil {
@@ -1368,7 +1385,11 @@ func batchResolveConflicts(conflicts []conflictFile, keep string, claudeDir stri
 		}
 	}
 
-	fmt.Printf("\n%s✓%s Resolved %d conflict(s)\n", colorGreen, colorReset, resolved)
+	if skipped > 0 {
+		fmt.Printf("\n%s✓%s Resolved %d conflict(s), skipped %d\n", colorGreen, colorReset, resolved, skipped)
+	} else {
+		fmt.Printf("\n%s✓%s Resolved %d conflict(s)\n", colorGreen, colorReset, resolved)
+	}
 	return nil
 }
 

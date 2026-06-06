@@ -52,3 +52,51 @@ func TestIsJSONLPath(t *testing.T) {
 		t.Error("want false for .json")
 	}
 }
+
+func TestBatchResolveKeepMerge(t *testing.T) {
+	dir := t.TempDir()
+	state, err := sync.LoadStateFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A .jsonl conflict (should merge) and a .txt conflict (should be skipped).
+	jl := filepath.Join(dir, "history.jsonl")
+	jlConf := jl + ".conflict.20260101-000000"
+	if err := os.WriteFile(jl, []byte(`{"timestamp":"2026-01-01T00:00:02Z","v":"b"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jlConf, []byte(`{"timestamp":"2026-01-01T00:00:01Z","v":"a"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	txt := filepath.Join(dir, "notes.txt")
+	txtConf := txt + ".conflict.20260101-000000"
+	if err := os.WriteFile(txt, []byte("local\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(txtConf, []byte("remote\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts := []conflictFile{
+		{OriginalPath: jl, ConflictPath: jlConf},
+		{OriginalPath: txt, ConflictPath: txtConf},
+	}
+	if err := batchResolveConflicts(conflicts, "merge", dir, state); err != nil {
+		t.Fatalf("batchResolveConflicts: %v", err)
+	}
+
+	// .jsonl merged + sidecar gone.
+	got, _ := os.ReadFile(jl)
+	want := `{"timestamp":"2026-01-01T00:00:01Z","v":"a"}` + "\n" + `{"timestamp":"2026-01-01T00:00:02Z","v":"b"}` + "\n"
+	if string(got) != want {
+		t.Errorf("jsonl not merged\n got: %q\nwant: %q", got, want)
+	}
+	if _, err := os.Stat(jlConf); !os.IsNotExist(err) {
+		t.Errorf("jsonl sidecar should be gone")
+	}
+	// .txt left untouched (skipped).
+	if _, err := os.Stat(txtConf); err != nil {
+		t.Errorf("txt sidecar should remain, got %v", err)
+	}
+}
