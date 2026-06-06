@@ -2,21 +2,33 @@
   "hooks": {
     "SessionStart": [
       {
-        "command": "bash {{plugin_dir}}/scripts/check-config.sh",
-        "additionalContext": true,
-        "blocking": false
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/check-config.sh\""
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "command": "bash {{plugin_dir}}/scripts/auto-push.sh",
-        "blocking": false
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-push.sh\""
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "command": "bash {{plugin_dir}}/scripts/auto-push.sh --force",
-        "blocking": false
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-push.sh\" --force"
+          }
+        ]
       }
     ]
   }
