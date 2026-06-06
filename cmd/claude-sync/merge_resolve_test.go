@@ -26,6 +26,15 @@ func TestMergeConflictFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Seed a prior base entry with a different hash so DetectChanges can compare
+	// against it — simulating the last-synced state before the conflict was created.
+	info, err := os.Stat(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.UpdateFile("history.jsonl", info, "000000basehash")
+
 	c := conflictFile{OriginalPath: orig, ConflictPath: conflict}
 	if err := mergeConflictFile(c, dir, state); err != nil {
 		t.Fatalf("mergeConflictFile: %v", err)
@@ -39,8 +48,22 @@ func TestMergeConflictFile(t *testing.T) {
 	if _, err := os.Stat(conflict); !os.IsNotExist(err) {
 		t.Errorf("conflict sidecar should be deleted, stat err = %v", err)
 	}
-	if state.GetFile("history.jsonl") == nil {
-		t.Error("state should track history.jsonl after merge so it uploads on next push")
+
+	// After resolution the state still holds the old base hash, so DetectChanges
+	// must report history.jsonl as a pending upload (action "modify").
+	changes, err := state.DetectChanges(dir, []string{"history.jsonl"})
+	if err != nil {
+		t.Fatalf("DetectChanges: %v", err)
+	}
+	found := false
+	for _, ch := range changes {
+		if ch.Path == "history.jsonl" && (ch.Action == "modify" || ch.Action == "add") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("resolved file should be reported as a pending change (modify/add) so next push uploads it")
 	}
 }
 
@@ -78,6 +101,14 @@ func TestBatchResolveKeepMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Seed a prior base entry for the .jsonl file so DetectChanges has a hash
+	// to compare against after the merge resolves it.
+	jlInfo, err := os.Stat(jl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.UpdateFile("history.jsonl", jlInfo, "000000basehash")
+
 	conflicts := []conflictFile{
 		{OriginalPath: jl, ConflictPath: jlConf},
 		{OriginalPath: txt, ConflictPath: txtConf},
@@ -98,5 +129,22 @@ func TestBatchResolveKeepMerge(t *testing.T) {
 	// .txt left untouched (skipped).
 	if _, err := os.Stat(txtConf); err != nil {
 		t.Errorf("txt sidecar should remain, got %v", err)
+	}
+
+	// After batch merge the state still holds the old base hash, so DetectChanges
+	// must report history.jsonl as a pending upload (action "modify").
+	changes, err := state.DetectChanges(dir, []string{"history.jsonl"})
+	if err != nil {
+		t.Fatalf("DetectChanges: %v", err)
+	}
+	found := false
+	for _, ch := range changes {
+		if ch.Path == "history.jsonl" && (ch.Action == "modify" || ch.Action == "add") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("merged .jsonl should be reported as a pending change (modify/add) so next push uploads it")
 	}
 }

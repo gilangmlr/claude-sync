@@ -1295,9 +1295,9 @@ func isJSONLPath(p string) bool {
 }
 
 // mergeConflictFile replaces the local file with the timestamp-sorted union of
-// local + remote (the .conflict sidecar), removes the sidecar, and updates sync
-// state so the merged result is uploaded on the next push. Shared by the
-// interactive and batch resolvers.
+// local + remote (the .conflict sidecar), removes the sidecar. State is NOT
+// updated here so that the next push detects the resolved file as modified and
+// uploads it. Shared by the interactive and batch resolvers.
 func mergeConflictFile(c conflictFile, claudeDir string, state *sync.SyncState) error {
 	local, err := os.ReadFile(c.OriginalPath)
 	if err != nil {
@@ -1316,13 +1316,6 @@ func mergeConflictFile(c conflictFile, claudeDir string, state *sync.SyncState) 
 	}
 	if err := os.Remove(c.ConflictPath); err != nil {
 		return err
-	}
-	relPath, _ := filepath.Rel(claudeDir, c.OriginalPath)
-	if info, err := os.Stat(c.OriginalPath); err == nil {
-		if hash, err := sync.HashFile(c.OriginalPath); err == nil {
-			state.UpdateFile(relPath, info, hash)
-			state.MarkUploaded(relPath)
-		}
 	}
 	return nil
 }
@@ -1365,15 +1358,6 @@ func batchResolveConflicts(conflicts []conflictFile, keep string, claudeDir stri
 				continue
 			}
 			fmt.Printf("%s✓%s Kept remote: %s\n", colorGreen, colorReset, filepath.Base(c.OriginalPath))
-		}
-
-		// Update state with the resolved file's hash
-		relPath, _ := filepath.Rel(claudeDir, c.OriginalPath)
-		if info, err := os.Stat(c.OriginalPath); err == nil {
-			if hash, err := sync.HashFile(c.OriginalPath); err == nil {
-				state.UpdateFile(relPath, info, hash)
-				state.MarkUploaded(relPath)
-			}
 		}
 		resolved++
 	}
@@ -1439,13 +1423,6 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 					fmt.Printf("        %s✗%s Error: %v\n", colorYellow, colorReset, err)
 				} else {
 					fmt.Printf("        %s✓%s Kept local version\n\n", colorGreen, colorReset)
-					// Update state with the kept file's hash
-					if info, err := os.Stat(c.OriginalPath); err == nil {
-						if hash, err := sync.HashFile(c.OriginalPath); err == nil {
-							state.UpdateFile(relOriginal, info, hash)
-							state.MarkUploaded(relOriginal)
-						}
-					}
 					resolved++
 				}
 				break promptLoop
@@ -1456,13 +1433,6 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 					fmt.Printf("        %s✗%s Error: %v\n", colorYellow, colorReset, err)
 				} else {
 					fmt.Printf("        %s✓%s Replaced with remote version\n\n", colorGreen, colorReset)
-					// Update state with the new file's hash
-					if info, err := os.Stat(c.OriginalPath); err == nil {
-						if hash, err := sync.HashFile(c.OriginalPath); err == nil {
-							state.UpdateFile(relOriginal, info, hash)
-							state.MarkUploaded(relOriginal)
-						}
-					}
 					resolved++
 				}
 				break promptLoop
