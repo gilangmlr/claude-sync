@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	version = "1.10.0-fork" // fork default; overridable via ldflags -X main.version=x.x.x
+	version = "1.11.0-fork" // fork default; overridable via ldflags -X main.version=x.x.x
 	quiet   bool
 )
 
@@ -59,6 +59,7 @@ func main() {
 		initCmd(),
 		pushCmd(),
 		pullCmd(),
+		autoCmd(),
 		statusCmd(),
 		diffCmd(),
 		conflictsCmd(),

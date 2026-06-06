@@ -106,16 +106,28 @@ Claude will walk you through:
 
 ### Auto-Sync
 
-The plugin automatically:
-- Checks configuration status on session start
-- Pushes changes when the session ends (`SessionEnd` → `auto-push.sh --force`)
-- Pushes changes while you work, debounced to at most once per 5 minutes
-  (`Stop` → `auto-push.sh`; Claude Code has no Idle event, so the Stop event
-  plus a debounce window approximates "push after idle")
+This plugin only checks configuration status on session start. Auto-push is
+driven by the **`claude-sync auto`** CLI command, wired into your own Claude
+Code hooks (so the behaviour is tracked in your settings, not buried in the
+plugin):
 
-Tune the window with `CLAUDE_SYNC_DEBOUNCE_SECONDS` (default `300`). Pushes run
-in the background and never block the session; auto-push activity is logged to
-`~/.claude-sync/auto-push.log`.
+```jsonc
+// .claude/settings.json (project) or ~/.claude/settings.json (user)
+"hooks": {
+  "Stop":       [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null && claude-sync auto || true" }] }],
+  "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null && claude-sync auto --force || true" }] }]
+}
+```
+
+`claude-sync auto` runs a debounced push in the background: it does nothing when
+unconfigured, when the debounce window hasn't elapsed, or when nothing is
+pending; otherwise it launches `claude-sync push -q` as a detached process so
+the session is never blocked. `--force` bypasses the window (for `SessionEnd`).
+Claude Code has no Idle event, so the `Stop` event plus the debounce window
+approximates "push after idle".
+
+Tune the window with `--debounce <seconds>` or `CLAUDE_SYNC_DEBOUNCE_SECONDS`
+(default `300`). Auto-push activity is logged to `~/.claude-sync/auto-push.log`.
 
 ## Setting Up a Second Device
 
@@ -203,10 +215,9 @@ claude-code-plugin/
 ├── .claude-plugin/
 │   └── plugin.json          # Plugin metadata
 ├── hooks/
-│   └── hooks.json           # SessionStart, Stop, SessionEnd hooks
+│   └── hooks.json           # SessionStart config check (auto-push is the `claude-sync auto` CLI, wired via your settings)
 ├── scripts/
 │   ├── check-config.sh      # Check if configured on session start
-│   ├── auto-push.sh         # Auto-push with 5-minute debounce
 │   └── generate-key.py      # Argon2id key derivation from passphrase
 ├── commands/
 │   ├── sync-init.md         # Interactive configuration wizard
