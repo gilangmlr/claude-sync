@@ -109,13 +109,22 @@ Claude will walk you through:
 This plugin only checks configuration status on session start. Auto-push is
 driven by the **`claude-sync auto`** CLI command, wired into your own Claude
 Code hooks (so the behaviour is tracked in your settings, not buried in the
-plugin):
+plugin). Manage it with:
+
+```bash
+claude-sync auto enable             # install Stop/SessionEnd hooks (scope: project) + turn on
+claude-sync auto enable --scope user # install into ~/.claude/settings.json instead
+claude-sync auto status             # enabled? configured? last push, pending, where hooks live
+claude-sync auto disable            # remove the hooks + turn off (auto no-ops until re-enabled)
+```
+
+`enable` writes these entries (you can also add them by hand):
 
 ```jsonc
 // .claude/settings.json (project) or ~/.claude/settings.json (user)
 "hooks": {
-  "Stop":       [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null && claude-sync auto || true" }] }],
-  "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null && claude-sync auto --force || true" }] }]
+  "Stop":       [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null 2>&1 && claude-sync auto || true" }] }],
+  "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v claude-sync >/dev/null 2>&1 && claude-sync auto --force || true" }] }]
 }
 ```
 
