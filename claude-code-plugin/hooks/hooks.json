@@ -6,6 +6,18 @@
         "additionalContext": true,
         "blocking": false
       }
+    ],
+    "Stop": [
+      {
+        "command": "bash {{plugin_dir}}/scripts/auto-push.sh",
+        "blocking": false
+      }
+    ],
+    "SessionEnd": [
+      {
+        "command": "bash {{plugin_dir}}/scripts/auto-push.sh --force",
+        "blocking": false
+      }
     ]
   }
 }

@@ -108,8 +108,14 @@ Claude will walk you through:
 
 The plugin automatically:
 - Checks configuration status on session start
-- Pushes changes when the session ends
-- Pushes changes after 5 minutes of idle time (debounced)
+- Pushes changes when the session ends (`SessionEnd` → `auto-push.sh --force`)
+- Pushes changes while you work, debounced to at most once per 5 minutes
+  (`Stop` → `auto-push.sh`; Claude Code has no Idle event, so the Stop event
+  plus a debounce window approximates "push after idle")
+
+Tune the window with `CLAUDE_SYNC_DEBOUNCE_SECONDS` (default `300`). Pushes run
+in the background and never block the session; auto-push activity is logged to
+`~/.claude-sync/auto-push.log`.
 
 ## Setting Up a Second Device
 
@@ -197,7 +203,7 @@ claude-code-plugin/
 ├── .claude-plugin/
 │   └── plugin.json          # Plugin metadata
 ├── hooks/
-│   └── hooks.json           # SessionStart, SessionEnd, Idle hooks
+│   └── hooks.json           # SessionStart, Stop, SessionEnd hooks
 ├── scripts/
 │   ├── check-config.sh      # Check if configured on session start
 │   ├── auto-push.sh         # Auto-push with 5-minute debounce
