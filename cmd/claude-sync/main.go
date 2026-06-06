@@ -1288,6 +1288,44 @@ func findConflicts(claudeDir string) ([]conflictFile, error) {
 	return conflicts, err
 }
 
+// isJSONLPath reports whether p is a JSONL file eligible for union merge.
+func isJSONLPath(p string) bool {
+	return strings.HasSuffix(strings.ToLower(p), ".jsonl")
+}
+
+// mergeConflictFile replaces the local file with the timestamp-sorted union of
+// local + remote (the .conflict sidecar), removes the sidecar, and updates sync
+// state so the merged result is uploaded on the next push. Shared by the
+// interactive and batch resolvers.
+func mergeConflictFile(c conflictFile, claudeDir string, state *sync.SyncState) error {
+	local, err := os.ReadFile(c.OriginalPath)
+	if err != nil {
+		return err
+	}
+	remote, err := os.ReadFile(c.ConflictPath)
+	if err != nil {
+		return err
+	}
+	merged, err := sync.MergeJSONL(local, remote)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(c.OriginalPath, merged, 0644); err != nil {
+		return err
+	}
+	if err := os.Remove(c.ConflictPath); err != nil {
+		return err
+	}
+	relPath, _ := filepath.Rel(claudeDir, c.OriginalPath)
+	if info, err := os.Stat(c.OriginalPath); err == nil {
+		if hash, err := sync.HashFile(c.OriginalPath); err == nil {
+			state.UpdateFile(relPath, info, hash)
+			state.MarkUploaded(relPath)
+		}
+	}
+	return nil
+}
+
 func batchResolveConflicts(conflicts []conflictFile, keep string, claudeDir string, state *sync.SyncState) error {
 	keep = strings.ToLower(keep)
 	if keep != "local" && keep != "remote" {
@@ -1338,7 +1376,8 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("For each conflict, choose how to resolve:")
-	fmt.Printf("  %s[l]%s Keep local  %s[r]%s Keep remote  %s[d]%s Show diff  %s[s]%s Skip  %s[q]%s Quit\n\n",
+	fmt.Printf("  %s[l]%s Keep local  %s[r]%s Keep remote  %s[m]%s Merge (jsonl)  %s[d]%s Show diff  %s[s]%s Skip  %s[q]%s Quit\n\n",
+		colorCyan, colorReset,
 		colorCyan, colorReset,
 		colorCyan, colorReset,
 		colorCyan, colorReset,
@@ -1368,7 +1407,7 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 
 	promptLoop:
 		for {
-			fmt.Printf("        %sResolve [l/r/d/s/q]:%s ", colorDim, colorReset)
+			fmt.Printf("        %sResolve [l/r/m/d/s/q]:%s ", colorDim, colorReset)
 			input, _ := reader.ReadString('\n')
 			input = strings.TrimSpace(strings.ToLower(input))
 
@@ -1407,6 +1446,19 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 				}
 				break promptLoop
 
+			case "m", "merge":
+				if !isJSONLPath(c.OriginalPath) {
+					fmt.Printf("        %sMerge only supported for .jsonl files%s\n", colorDim, colorReset)
+					continue
+				}
+				if err := mergeConflictFile(c, claudeDir, state); err != nil {
+					fmt.Printf("        %s✗%s Cannot merge (%v); choose l/r/d/s\n", colorYellow, colorReset, err)
+					continue
+				}
+				fmt.Printf("        %s✓%s Merged local + remote (union)\n\n", colorGreen, colorReset)
+				resolved++
+				break promptLoop
+
 			case "d", "diff":
 				// Show diff
 				showDiff(c.OriginalPath, c.ConflictPath)
@@ -1426,7 +1478,7 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 				return nil
 
 			default:
-				fmt.Printf("        %sInvalid choice. Use l/r/d/s/q%s\n", colorDim, colorReset)
+				fmt.Printf("        %sInvalid choice. Use l/r/m/d/s/q%s\n", colorDim, colorReset)
 			}
 		}
 	}
