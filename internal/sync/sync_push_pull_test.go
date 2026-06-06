@@ -333,6 +333,8 @@ func TestPullMergesDivergedJSONL(t *testing.T) {
 	ctx := context.Background()
 
 	writeFile(t, env.claudeDir, "history.jsonl", `{"ts":1,"event":"base"}`+"\n")
+	// An unchanged file that should NOT be copied into the merge backup.
+	writeFile(t, env.claudeDir, "CLAUDE.md", "# unchanged\n")
 
 	// Push to establish baseline
 	if _, err := env.syncer.Push(ctx); err != nil {
@@ -391,6 +393,10 @@ func TestPullMergesDivergedJSONL(t *testing.T) {
 	// Backup holds the pre-merge LOCAL content (not the union).
 	if b := readFile(t, result.BackupDir, "history.jsonl"); strings.Contains(b, `"event":"remote"`) {
 		t.Errorf("backup should be pre-merge local, got %q", b)
+	}
+	// Only merged files are backed up: the unchanged CLAUDE.md must be absent.
+	if _, err := os.Stat(filepath.Join(result.BackupDir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Errorf("unchanged CLAUDE.md should NOT be in the merge backup (err=%v)", err)
 	}
 }
 

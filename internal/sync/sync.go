@@ -293,20 +293,22 @@ func (s *Syncer) Pull(ctx context.Context) (*SyncResult, error) {
 	}
 	var toDownload []downloadTask
 
-	// Lazily snapshot local state before the first merge write, so a bad union
-	// is always recoverable. Created at most once per pull.
+	// Back up each file just before it is merged, so a bad union is always
+	// recoverable. Only merged files are copied (unchanged files are not). The
+	// backup dir is created lazily with a single timestamp for the whole pull.
 	var backupOnce sync.Once
 	var backupDir string
-	var backupErr error
-	ensureBackup := func() error {
-		backupOnce.Do(func() { backupDir, backupErr = s.BackupAll() })
-		return backupErr
+	backupBeforeMerge := func(relativePath string) error {
+		backupOnce.Do(func() {
+			backupDir = s.claudeDir + ".backup." + time.Now().Format("20060102-150405")
+		})
+		return s.backupFile(backupDir, relativePath)
 	}
 
 	// reconcileOverlap merges (or sidecars) a file present on both sides and
 	// records the outcome on the result.
 	reconcileOverlap := func(localPath string, remoteObj storage.ObjectInfo) {
-		outcome, err := s.reconcile(ctx, localPath, remoteObj, ensureBackup)
+		outcome, err := s.reconcile(ctx, localPath, remoteObj, backupBeforeMerge)
 		switch {
 		case err != nil:
 			result.Errors = append(result.Errors, fmt.Errorf("%s: %w", localPath, err))
@@ -506,7 +508,7 @@ func (s *Syncer) downloadFile(ctx context.Context, relativePath, remoteKey strin
 // JSON falls back to keep-local + .conflict sidecar. A backup snapshot is taken
 // (via ensureBackup) before the first merge write. The returned outcome is one
 // of "merged", "conflict", or "" (identical / nothing to do).
-func (s *Syncer) reconcile(ctx context.Context, relativePath string, remoteObj storage.ObjectInfo, ensureBackup func() error) (string, error) {
+func (s *Syncer) reconcile(ctx context.Context, relativePath string, remoteObj storage.ObjectInfo, backupBeforeMerge func(string) error) (string, error) {
 	local, err := os.ReadFile(filepath.Join(s.claudeDir, relativePath))
 	if err != nil {
 		return "", fmt.Errorf("read local: %w", err)
@@ -534,8 +536,8 @@ func (s *Syncer) reconcile(ctx context.Context, relativePath string, remoteObj s
 		return "", nil // local already contained everything; push will sync remote
 	}
 
-	// We are about to overwrite local with the merged union: back up first.
-	if err := ensureBackup(); err != nil {
+	// We are about to overwrite local with the merged union: back up this file first.
+	if err := backupBeforeMerge(relativePath); err != nil {
 		return "", fmt.Errorf("backup before merge: %w", err)
 	}
 	if err := s.writeMerged(relativePath, merged); err != nil {
@@ -557,32 +559,22 @@ func (s *Syncer) writeMerged(relativePath string, data []byte) error {
 	return nil
 }
 
-// BackupAll snapshots all syncable local files into ~/.claude.backup.<timestamp>
-// (a sibling of ~/.claude, outside the synced tree) and returns its path.
-func (s *Syncer) BackupAll() (string, error) {
-	timestamp := time.Now().Format("20060102-150405")
-	backupDir := s.claudeDir + ".backup." + timestamp
-
-	files, err := GetLocalFiles(s.claudeDir, s.syncPaths(), s.isExcluded)
+// backupFile copies the current local copy of relativePath into backupDir
+// (preserving its relative path). Only files that are actually about to be
+// merged are backed up — unchanged files are not copied.
+func (s *Syncer) backupFile(backupDir, relativePath string) error {
+	data, err := os.ReadFile(filepath.Join(s.claudeDir, relativePath))
 	if err != nil {
-		return "", fmt.Errorf("failed to list files: %w", err)
+		return fmt.Errorf("failed to read %s: %w", relativePath, err)
 	}
-
-	for relPath := range files {
-		data, err := os.ReadFile(filepath.Join(s.claudeDir, relPath))
-		if err != nil {
-			return "", fmt.Errorf("failed to read %s: %w", relPath, err)
-		}
-		dstPath := filepath.Join(backupDir, relPath)
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-			return "", fmt.Errorf("failed to create backup dir: %w", err)
-		}
-		if err := os.WriteFile(dstPath, data, 0644); err != nil {
-			return "", fmt.Errorf("failed to write backup %s: %w", relPath, err)
-		}
+	dstPath := filepath.Join(backupDir, relativePath)
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("failed to create backup dir: %w", err)
 	}
-
-	return backupDir, nil
+	if err := os.WriteFile(dstPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write backup %s: %w", relativePath, err)
+	}
+	return nil
 }
 
 func (s *Syncer) handleConflict(ctx context.Context, relativePath string, remoteObj storage.ObjectInfo) error {

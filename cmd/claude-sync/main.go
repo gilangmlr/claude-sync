@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	version = "1.13.0-fork" // fork default; overridable via ldflags -X main.version=x.x.x
+	version = "1.13.1-fork" // fork default; overridable via ldflags -X main.version=x.x.x
 	quiet   bool
 )
 
