@@ -328,65 +328,69 @@ func TestPullSkipsUnchangedFiles(t *testing.T) {
 	}
 }
 
-func TestPullDetectsConflicts(t *testing.T) {
+func TestPullMergesDivergedJSONL(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx := context.Background()
 
-	writeFile(t, env.claudeDir, "history.jsonl", `{"event":"local-v1"}`)
+	writeFile(t, env.claudeDir, "history.jsonl", `{"ts":1,"event":"base"}`+"\n")
 
 	// Push to establish baseline
 	if _, err := env.syncer.Push(ctx); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 
-	// Modify local file (simulating local changes)
-	writeFile(t, env.claudeDir, "history.jsonl", `{"event":"local-v2"}`)
+	// Local appends an entry.
+	writeFile(t, env.claudeDir, "history.jsonl", `{"ts":1,"event":"base"}`+"\n"+`{"ts":2,"event":"local"}`+"\n")
 
-	// Modify remote file (simulating another device pushing)
-	remoteContent := []byte(`{"event":"remote-v2"}`)
+	// Remote (another device) appends a different entry on top of the base.
+	remoteContent := []byte(`{"ts":1,"event":"base"}` + "\n" + `{"ts":3,"event":"remote"}` + "\n")
 	encrypted, err := env.syncer.encryptor.Encrypt(remoteContent)
 	if err != nil {
 		t.Fatalf("Encrypt failed: %v", err)
 	}
-	// Small delay to ensure remote timestamp is after the state's Uploaded time
 	time.Sleep(10 * time.Millisecond)
 	if err := env.store.Upload(ctx, "history.jsonl.age", encrypted); err != nil {
 		t.Fatalf("Upload to mock failed: %v", err)
 	}
 
-	// Pull — should detect conflict
+	// Pull — .jsonl should be union-merged, not sidecarred.
 	result, err := env.syncer.Pull(ctx)
 	if err != nil {
 		t.Fatalf("Pull failed: %v", err)
 	}
-	if len(result.Conflicts) != 1 {
-		t.Errorf("Expected 1 conflict, got %d: %v", len(result.Conflicts), result.Conflicts)
+	if len(result.Conflicts) != 0 {
+		t.Errorf("Expected 0 conflicts (jsonl merges), got %v", result.Conflicts)
+	}
+	if len(result.Merged) != 1 || result.Merged[0] != "history.jsonl" {
+		t.Errorf("Expected history.jsonl in Merged, got %v", result.Merged)
 	}
 
-	// Local file should be preserved
+	// Merged local file contains all three entries (base + local + remote).
 	got := readFile(t, env.claudeDir, "history.jsonl")
-	if got != `{"event":"local-v2"}` {
-		t.Errorf("Local file should be preserved, got %q", got)
-	}
-
-	// A .conflict file should exist
-	entries, err := os.ReadDir(env.claudeDir)
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
-	conflictFound := false
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "history.jsonl.conflict.") {
-			conflictFound = true
-			// Verify conflict file contains remote content
-			data, _ := os.ReadFile(filepath.Join(env.claudeDir, e.Name()))
-			if string(data) != `{"event":"remote-v2"}` {
-				t.Errorf("Conflict file should contain remote content, got %q", string(data))
-			}
+	for _, want := range []string{`"event":"base"`, `"event":"local"`, `"event":"remote"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("merged file missing %s; got %q", want, got)
 		}
 	}
-	if !conflictFound {
-		t.Error("Expected a .conflict file to be created")
+
+	// No .conflict sidecar for a merged jsonl.
+	entries, _ := os.ReadDir(env.claudeDir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".conflict.") {
+			t.Errorf("unexpected sidecar for merged jsonl: %s", e.Name())
+		}
+	}
+
+	// A backup snapshot must have been created before the merge.
+	if result.BackupDir == "" {
+		t.Error("expected a backup dir before merge")
+	}
+	if _, err := os.Stat(filepath.Join(result.BackupDir, "history.jsonl")); err != nil {
+		t.Errorf("backup should contain pre-merge history.jsonl: %v", err)
+	}
+	// Backup holds the pre-merge LOCAL content (not the union).
+	if b := readFile(t, result.BackupDir, "history.jsonl"); strings.Contains(b, `"event":"remote"`) {
+		t.Errorf("backup should be pre-merge local, got %q", b)
 	}
 }
 
@@ -533,20 +537,20 @@ func TestConflictCreatesConflictFile(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx := context.Background()
 
-	// Push initial version of history.jsonl
-	writeFile(t, env.claudeDir, "history.jsonl", "line1\n")
+	// Structured JSON is NOT line-merged (would corrupt) -> sidecar path.
+	writeFile(t, env.claudeDir, "settings.json", `{"theme":"base"}`)
 	if _, err := env.syncer.Push(ctx); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 
-	// Local appends
-	writeFile(t, env.claudeDir, "history.jsonl", "line1\nline2-local\n")
+	// Local change
+	writeFile(t, env.claudeDir, "settings.json", `{"theme":"local"}`)
 
 	// Remote also changed
-	remoteData := []byte("line1\nline2-remote\n")
+	remoteData := []byte(`{"theme":"remote"}`)
 	encrypted, _ := env.syncer.encryptor.Encrypt(remoteData)
 	time.Sleep(10 * time.Millisecond)
-	if err := env.store.Upload(ctx, "history.jsonl.age", encrypted); err != nil {
+	if err := env.store.Upload(ctx, "settings.json.age", encrypted); err != nil {
 		t.Fatalf("Upload to mock failed: %v", err)
 	}
 
@@ -556,34 +560,81 @@ func TestConflictCreatesConflictFile(t *testing.T) {
 		t.Fatalf("Pull failed: %v", err)
 	}
 
-	// Should have conflict
-	if len(result.Conflicts) != 1 {
-		t.Fatalf("Expected 1 conflict, got %d", len(result.Conflicts))
+	// Should have conflict (not merge) for structured JSON.
+	if len(result.Conflicts) != 1 || result.Conflicts[0] != "settings.json" {
+		t.Fatalf("Expected 1 conflict on settings.json, got %v", result.Conflicts)
 	}
-	if result.Conflicts[0] != "history.jsonl" {
-		t.Errorf("Expected conflict on history.jsonl, got %s", result.Conflicts[0])
+	if len(result.Merged) != 0 {
+		t.Errorf("structured JSON must not be merged, got %v", result.Merged)
 	}
 
 	// Local preserved
-	local := readFile(t, env.claudeDir, "history.jsonl")
-	if local != "line1\nline2-local\n" {
+	if local := readFile(t, env.claudeDir, "settings.json"); local != `{"theme":"local"}` {
 		t.Errorf("Local should be preserved, got %q", local)
 	}
 
-	// Conflict file has remote content
+	// Conflict sidecar has remote content
 	entries, _ := os.ReadDir(env.claudeDir)
 	found := false
 	for _, e := range entries {
-		if strings.Contains(e.Name(), "history.jsonl.conflict.") {
+		if strings.Contains(e.Name(), "settings.json.conflict.") {
 			found = true
 			data, _ := os.ReadFile(filepath.Join(env.claudeDir, e.Name()))
-			if string(data) != "line1\nline2-remote\n" {
+			if string(data) != `{"theme":"remote"}` {
 				t.Errorf("Conflict file content mismatch: %q", string(data))
 			}
 		}
 	}
 	if !found {
 		t.Error("No .conflict file created")
+	}
+}
+
+func TestFirstPullMergesExistingFilesInsteadOfOverwriting(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx := context.Background()
+
+	// Local has content but has NEVER synced (no state) — the first-pull case.
+	writeFile(t, env.claudeDir, "history.jsonl", `{"ts":1,"v":"local-only"}`+"\n")
+	writeFile(t, env.claudeDir, "CLAUDE.md", "# notes\nlocal note\n")
+
+	// Remote already has different content for both files.
+	for key, content := range map[string]string{
+		"history.jsonl.age": `{"ts":2,"v":"remote-only"}` + "\n",
+		"CLAUDE.md.age":     "# notes\nremote note\n",
+	} {
+		enc, _ := env.syncer.encryptor.Encrypt([]byte(content))
+		if err := env.store.Upload(ctx, key, enc); err != nil {
+			t.Fatalf("upload %s: %v", key, err)
+		}
+	}
+
+	if env.syncer.HasState() {
+		t.Fatal("precondition: syncer should have no state")
+	}
+
+	result, err := env.syncer.Pull(ctx)
+	if err != nil {
+		t.Fatalf("Pull failed: %v", err)
+	}
+	if len(result.Merged) != 2 {
+		t.Errorf("expected both files merged, got %v", result.Merged)
+	}
+
+	// .jsonl union: both entries survive (local not clobbered).
+	hist := readFile(t, env.claudeDir, "history.jsonl")
+	if !strings.Contains(hist, "local-only") || !strings.Contains(hist, "remote-only") {
+		t.Errorf("history.jsonl should contain both, got %q", hist)
+	}
+	// markdown line-union: local note preserved + remote note appended.
+	mem := readFile(t, env.claudeDir, "CLAUDE.md")
+	if !strings.Contains(mem, "local note") || !strings.Contains(mem, "remote note") {
+		t.Errorf("CLAUDE.md should contain both notes, got %q", mem)
+	}
+
+	// Backup taken before merging.
+	if result.BackupDir == "" {
+		t.Error("expected backup before first-pull merge")
 	}
 }
 

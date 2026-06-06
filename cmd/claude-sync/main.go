@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	version = "1.12.0-fork" // fork default; overridable via ldflags -X main.version=x.x.x
+	version = "1.13.0-fork" // fork default; overridable via ldflags -X main.version=x.x.x
 	quiet   bool
 )
 
@@ -961,6 +961,9 @@ Examples:
 								shortPath, util.FormatSize(event.Size),
 								strings.Repeat(" ", 10))
 						}
+					case "merge":
+						fmt.Printf("\r%s⤵%s Merged: %s (union)\n",
+							colorGreen, colorReset, event.Path)
 					case "conflict":
 						fmt.Printf("\r%s⚠%s Conflict: %s (saved as .conflict)\n",
 							colorYellow, colorReset, event.Path)
@@ -976,13 +979,16 @@ Examples:
 			if !quiet {
 				fmt.Println() // Clear the progress line
 
-				if len(result.Downloaded) == 0 && len(result.Conflicts) == 0 && len(result.Errors) == 0 {
+				if len(result.Downloaded) == 0 && len(result.Merged) == 0 && len(result.Conflicts) == 0 && len(result.Errors) == 0 {
 					// Already printed "Already up to date"
 				} else {
 					// Summary
 					var parts []string
 					if len(result.Downloaded) > 0 {
 						parts = append(parts, fmt.Sprintf("%s%d downloaded%s", colorGreen, len(result.Downloaded), colorReset))
+					}
+					if len(result.Merged) > 0 {
+						parts = append(parts, fmt.Sprintf("%s%d merged%s", colorGreen, len(result.Merged), colorReset))
 					}
 					if len(result.Conflicts) > 0 {
 						parts = append(parts, fmt.Sprintf("%s%d conflicts%s", colorYellow, len(result.Conflicts), colorReset))
@@ -994,8 +1000,20 @@ Examples:
 						fmt.Printf("%s✓%s Pull complete: %s\n", colorGreen, colorReset, strings.Join(parts, ", "))
 					}
 
+					if result.BackupDir != "" {
+						fmt.Printf("%sBackup before merge: %s%s\n", colorDim, result.BackupDir, colorReset)
+					}
+
+					if len(result.Merged) > 0 {
+						fmt.Printf("\n%sMerged (union of local + remote):%s\n", colorGreen, colorReset)
+						for _, m := range result.Merged {
+							fmt.Printf("  %s•%s %s\n", colorGreen, colorReset, m)
+						}
+						fmt.Printf("%sQueued for the next push so the remote converges.%s\n", colorDim, colorReset)
+					}
+
 					if len(result.Conflicts) > 0 {
-						fmt.Printf("\n%sConflicts (both local and remote changed):%s\n", colorYellow, colorReset)
+						fmt.Printf("\n%sConflicts (both changed, not auto-mergeable):%s\n", colorYellow, colorReset)
 						for _, c := range result.Conflicts {
 							fmt.Printf("  %s•%s %s\n", colorYellow, colorReset, c)
 						}
@@ -2232,6 +2250,9 @@ func executePull(ctx context.Context, syncer *sync.Syncer) error {
 						shortPath, util.FormatSize(event.Size),
 						strings.Repeat(" ", 10))
 				}
+			case "merge":
+				fmt.Printf("\r%s⤵%s Merged: %s (union)\n",
+					colorGreen, colorReset, event.Path)
 			case "conflict":
 				fmt.Printf("\r%s⚠%s Conflict: %s (saved as .conflict)\n",
 					colorYellow, colorReset, event.Path)
@@ -2247,12 +2268,15 @@ func executePull(ctx context.Context, syncer *sync.Syncer) error {
 	if !quiet {
 		fmt.Println()
 
-		if len(result.Downloaded) == 0 && len(result.Conflicts) == 0 && len(result.Errors) == 0 {
+		if len(result.Downloaded) == 0 && len(result.Merged) == 0 && len(result.Conflicts) == 0 && len(result.Errors) == 0 {
 			// Already printed "Already up to date"
 		} else {
 			var parts []string
 			if len(result.Downloaded) > 0 {
 				parts = append(parts, fmt.Sprintf("%s%d downloaded%s", colorGreen, len(result.Downloaded), colorReset))
+			}
+			if len(result.Merged) > 0 {
+				parts = append(parts, fmt.Sprintf("%s%d merged%s", colorGreen, len(result.Merged), colorReset))
 			}
 			if len(result.Conflicts) > 0 {
 				parts = append(parts, fmt.Sprintf("%s%d conflicts%s", colorYellow, len(result.Conflicts), colorReset))
@@ -2264,8 +2288,20 @@ func executePull(ctx context.Context, syncer *sync.Syncer) error {
 				fmt.Printf("%s✓%s Pull complete: %s\n", colorGreen, colorReset, strings.Join(parts, ", "))
 			}
 
+			if result.BackupDir != "" {
+				fmt.Printf("%sBackup before merge: %s%s\n", colorDim, result.BackupDir, colorReset)
+			}
+
+			if len(result.Merged) > 0 {
+				fmt.Printf("\n%sMerged (union of local + remote):%s\n", colorGreen, colorReset)
+				for _, m := range result.Merged {
+					fmt.Printf("  %s•%s %s\n", colorGreen, colorReset, m)
+				}
+				fmt.Printf("%sQueued for the next push so the remote converges.%s\n", colorDim, colorReset)
+			}
+
 			if len(result.Conflicts) > 0 {
-				fmt.Printf("\n%sConflicts (both local and remote changed):%s\n", colorYellow, colorReset)
+				fmt.Printf("\n%sConflicts (both changed, not auto-mergeable):%s\n", colorYellow, colorReset)
 				for _, c := range result.Conflicts {
 					fmt.Printf("  %s•%s %s\n", colorYellow, colorReset, c)
 				}

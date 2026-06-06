@@ -42,7 +42,11 @@ type SyncResult struct {
 	Downloaded []string
 	Deleted    []string
 	Conflicts  []string
+	Merged     []string
 	Errors     []error
+	// BackupDir is set to the snapshot directory created before the first merge
+	// in a pull (empty if nothing was merged).
+	BackupDir string
 }
 
 type ProgressEvent struct {
@@ -289,42 +293,62 @@ func (s *Syncer) Pull(ctx context.Context) (*SyncResult, error) {
 	}
 	var toDownload []downloadTask
 
-	for localPath, remoteObj := range remoteFiles {
-		localInfo, localExists := localFiles[localPath]
-		stateFile := s.state.GetFile(localPath)
+	// Lazily snapshot local state before the first merge write, so a bad union
+	// is always recoverable. Created at most once per pull.
+	var backupOnce sync.Once
+	var backupDir string
+	var backupErr error
+	ensureBackup := func() error {
+		backupOnce.Do(func() { backupDir, backupErr = s.BackupAll() })
+		return backupErr
+	}
 
-		shouldDownload := false
-
-		if !localExists {
-			shouldDownload = true
-		} else if stateFile != nil {
-			// Check if remote is newer than our last known state
-			if remoteObj.LastModified.After(stateFile.Uploaded) {
-				// Remote was updated after we last uploaded
-				// Check if local was also modified
-				localHash, _ := HashFile(filepath.Join(s.claudeDir, localPath))
-				if localHash != stateFile.Hash {
-					// Conflict: both changed
-					result.Conflicts = append(result.Conflicts, localPath)
-					s.progress(ProgressEvent{
-						Action: "conflict",
-						Path:   localPath,
-					})
-					if err := s.handleConflict(ctx, localPath, remoteObj); err != nil {
-						result.Errors = append(result.Errors, err)
-					}
-					continue
-				}
-				shouldDownload = true
-			}
-		} else if localInfo.ModTime().Before(remoteObj.LastModified) {
-			shouldDownload = true
-		}
-
-		if shouldDownload {
-			toDownload = append(toDownload, downloadTask{localPath, remoteObj})
+	// reconcileOverlap merges (or sidecars) a file present on both sides and
+	// records the outcome on the result.
+	reconcileOverlap := func(localPath string, remoteObj storage.ObjectInfo) {
+		outcome, err := s.reconcile(ctx, localPath, remoteObj, ensureBackup)
+		switch {
+		case err != nil:
+			result.Errors = append(result.Errors, fmt.Errorf("%s: %w", localPath, err))
+		case outcome == "merged":
+			result.Merged = append(result.Merged, localPath)
+			s.progress(ProgressEvent{Action: "merge", Path: localPath})
+		case outcome == "conflict":
+			result.Conflicts = append(result.Conflicts, localPath)
+			s.progress(ProgressEvent{Action: "conflict", Path: localPath})
 		}
 	}
+
+	for localPath, remoteObj := range remoteFiles {
+		_, localExists := localFiles[localPath]
+		stateFile := s.state.GetFile(localPath)
+
+		if !localExists {
+			toDownload = append(toDownload, downloadTask{localPath, remoteObj})
+			continue
+		}
+
+		if stateFile != nil {
+			// We have synced this file before. Only act if remote moved on.
+			if remoteObj.LastModified.After(stateFile.Uploaded) {
+				localHash, _ := HashFile(filepath.Join(s.claudeDir, localPath))
+				if localHash != stateFile.Hash {
+					// Both changed -> merge (or sidecar) instead of clobbering.
+					reconcileOverlap(localPath, remoteObj)
+				} else {
+					// Only remote changed -> safe to overwrite.
+					toDownload = append(toDownload, downloadTask{localPath, remoteObj})
+				}
+			}
+			continue
+		}
+
+		// First pull (no state) with a file that exists on both sides. Reconcile
+		// by content rather than blindly overwriting by modtime.
+		reconcileOverlap(localPath, remoteObj)
+	}
+
+	defer func() { result.BackupDir = backupDir }()
 
 	// Download files concurrently
 	total := len(toDownload)
@@ -425,24 +449,24 @@ func (s *Syncer) uploadFile(ctx context.Context, relativePath string) error {
 	return nil
 }
 
-func (s *Syncer) downloadFile(ctx context.Context, relativePath, remoteKey string) error {
-	// Download
+// downloadBytes downloads, decrypts, decompresses and (for project paths)
+// resolves ${HOME} placeholders, returning the file content without writing it.
+func (s *Syncer) downloadBytes(ctx context.Context, relativePath, remoteKey string) ([]byte, error) {
 	encrypted, err := s.storage.Download(ctx, remoteKey)
 	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
+		return nil, fmt.Errorf("failed to download: %w", err)
 	}
 
-	// Decrypt
 	data, err := s.encryptor.Decrypt(encrypted)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt: %w", err)
+		return nil, fmt.Errorf("failed to decrypt: %w", err)
 	}
 
 	// Decompress if gzipped (backward-compatible with uncompressed data)
 	if isGzipped(data) {
 		data, err = gzipDecompress(data)
 		if err != nil {
-			return fmt.Errorf("failed to decompress: %w", err)
+			return nil, fmt.Errorf("failed to decompress: %w", err)
 		}
 	}
 
@@ -451,25 +475,114 @@ func (s *Syncer) downloadFile(ctx context.Context, relativePath, remoteKey strin
 		data = s.pathMapper.ResolveContent(data)
 	}
 
-	// Ensure directory exists
-	fullPath := filepath.Join(s.claudeDir, relativePath)
-	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+	return data, nil
+}
+
+func (s *Syncer) downloadFile(ctx context.Context, relativePath, remoteKey string) error {
+	data, err := s.downloadBytes(ctx, relativePath, remoteKey)
+	if err != nil {
+		return err
 	}
 
-	// Write file
+	fullPath := filepath.Join(s.claudeDir, relativePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
 	if err := os.WriteFile(fullPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	// Update state
+	// Update state: downloaded file now matches remote (in sync, nothing to push).
 	info, _ := os.Stat(fullPath)
 	hash, _ := HashFile(fullPath)
 	s.state.UpdateFile(relativePath, info, hash)
 	s.state.MarkUploaded(relativePath)
 
 	return nil
+}
+
+// reconcile handles a file that exists both locally and remotely and may have
+// diverged. Mergeable files (.jsonl, text) are union-merged in place; structured
+// JSON falls back to keep-local + .conflict sidecar. A backup snapshot is taken
+// (via ensureBackup) before the first merge write. The returned outcome is one
+// of "merged", "conflict", or "" (identical / nothing to do).
+func (s *Syncer) reconcile(ctx context.Context, relativePath string, remoteObj storage.ObjectInfo, ensureBackup func() error) (string, error) {
+	local, err := os.ReadFile(filepath.Join(s.claudeDir, relativePath))
+	if err != nil {
+		return "", fmt.Errorf("read local: %w", err)
+	}
+	remote, err := s.downloadBytes(ctx, relativePath, remoteObj.Key)
+	if err != nil {
+		return "", err
+	}
+	if bytes.Equal(local, remote) {
+		return "", nil // identical content, nothing to do
+	}
+
+	merged, ok, err := MergeForPull(relativePath, local, remote)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		// Structured JSON: keep local, save remote as a .conflict sidecar.
+		if err := s.handleConflict(ctx, relativePath, remoteObj); err != nil {
+			return "", err
+		}
+		return "conflict", nil
+	}
+	if bytes.Equal(merged, local) {
+		return "", nil // local already contained everything; push will sync remote
+	}
+
+	// We are about to overwrite local with the merged union: back up first.
+	if err := ensureBackup(); err != nil {
+		return "", fmt.Errorf("backup before merge: %w", err)
+	}
+	if err := s.writeMerged(relativePath, merged); err != nil {
+		return "", err
+	}
+	return "merged", nil
+}
+
+// writeMerged writes union-merged content to the local file. State is left
+// untouched so DetectChanges flags the file and the next push uploads the union.
+func (s *Syncer) writeMerged(relativePath string, data []byte) error {
+	fullPath := filepath.Join(s.claudeDir, relativePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if err := os.WriteFile(fullPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write merged file: %w", err)
+	}
+	return nil
+}
+
+// BackupAll snapshots all syncable local files into ~/.claude.backup.<timestamp>
+// (a sibling of ~/.claude, outside the synced tree) and returns its path.
+func (s *Syncer) BackupAll() (string, error) {
+	timestamp := time.Now().Format("20060102-150405")
+	backupDir := s.claudeDir + ".backup." + timestamp
+
+	files, err := GetLocalFiles(s.claudeDir, s.syncPaths(), s.isExcluded)
+	if err != nil {
+		return "", fmt.Errorf("failed to list files: %w", err)
+	}
+
+	for relPath := range files {
+		data, err := os.ReadFile(filepath.Join(s.claudeDir, relPath))
+		if err != nil {
+			return "", fmt.Errorf("failed to read %s: %w", relPath, err)
+		}
+		dstPath := filepath.Join(backupDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+			return "", fmt.Errorf("failed to create backup dir: %w", err)
+		}
+		if err := os.WriteFile(dstPath, data, 0644); err != nil {
+			return "", fmt.Errorf("failed to write backup %s: %w", relPath, err)
+		}
+	}
+
+	return backupDir, nil
 }
 
 func (s *Syncer) handleConflict(ctx context.Context, relativePath string, remoteObj storage.ObjectInfo) error {
