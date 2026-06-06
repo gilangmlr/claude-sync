@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	version = "1.9.0-fork.scope-pathmap" // fork default; overridable via ldflags -X main.version=x.x.x
+	version = "1.9.1-fork" // fork default; overridable via ldflags -X main.version=x.x.x
 	quiet   bool
 )
 
@@ -1763,7 +1763,7 @@ Examples:
 }
 
 func getLatestRelease() (*GitHubRelease, error) {
-	url := "https://api.github.com/repos/tawanorg/claude-sync/releases/latest"
+	url := "https://api.github.com/repos/gilangmlr/claude-sync/releases/latest"
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -2328,7 +2328,7 @@ type GitHubReleaseWithBody struct {
 }
 
 func getAllReleases(limit int) ([]GitHubReleaseWithBody, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/tawanorg/claude-sync/releases?per_page=%d", limit)
+	url := fmt.Sprintf("https://api.github.com/repos/gilangmlr/claude-sync/releases?per_page=%d", limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
