@@ -39,6 +39,9 @@ func TestMergeConflictFile(t *testing.T) {
 	if _, err := os.Stat(conflict); !os.IsNotExist(err) {
 		t.Errorf("conflict sidecar should be deleted, stat err = %v", err)
 	}
+	if state.GetFile("history.jsonl") == nil {
+		t.Error("state should track history.jsonl after merge so it uploads on next push")
+	}
 }
 
 func TestIsJSONLPath(t *testing.T) {

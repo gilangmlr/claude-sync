@@ -1452,7 +1452,7 @@ func interactiveResolveConflicts(conflicts []conflictFile, claudeDir string, sta
 					continue
 				}
 				if err := mergeConflictFile(c, claudeDir, state); err != nil {
-					fmt.Printf("        %s✗%s Cannot merge (%v); choose l/r/d/s\n", colorYellow, colorReset, err)
+					fmt.Printf("        %s✗%s Cannot merge (%v); choose l/r/m/d/s/q\n", colorYellow, colorReset, err)
 					continue
 				}
 				fmt.Printf("        %s✓%s Merged local + remote (union)\n\n", colorGreen, colorReset)
