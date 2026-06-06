@@ -1,4 +1,4 @@
-module github.com/tawanorg/claude-sync
+module github.com/gilangmlr/claude-sync
 
 go 1.24.0
 

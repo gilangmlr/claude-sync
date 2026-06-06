@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tawanorg/claude-sync/internal/storage"
+	"github.com/gilangmlr/claude-sync/internal/storage"
 	"gopkg.in/yaml.v3"
 )
 

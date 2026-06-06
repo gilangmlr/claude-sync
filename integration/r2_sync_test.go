@@ -17,13 +17,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tawanorg/claude-sync/internal/config"
-	"github.com/tawanorg/claude-sync/internal/crypto"
-	"github.com/tawanorg/claude-sync/internal/storage"
-	"github.com/tawanorg/claude-sync/internal/sync"
+	"github.com/gilangmlr/claude-sync/internal/config"
+	"github.com/gilangmlr/claude-sync/internal/crypto"
+	"github.com/gilangmlr/claude-sync/internal/storage"
+	"github.com/gilangmlr/claude-sync/internal/sync"
 
 	// Register storage adapters
-	_ "github.com/tawanorg/claude-sync/internal/storage/r2"
+	_ "github.com/gilangmlr/claude-sync/internal/storage/r2"
 )
 
 // TestBasicCrossDeviceSync tests the core sync flow:

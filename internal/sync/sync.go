@@ -14,14 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tawanorg/claude-sync/internal/config"
-	"github.com/tawanorg/claude-sync/internal/crypto"
-	"github.com/tawanorg/claude-sync/internal/storage"
+	"github.com/gilangmlr/claude-sync/internal/config"
+	"github.com/gilangmlr/claude-sync/internal/crypto"
+	"github.com/gilangmlr/claude-sync/internal/storage"
 
 	// Register storage adapters
-	_ "github.com/tawanorg/claude-sync/internal/storage/gcs"
-	_ "github.com/tawanorg/claude-sync/internal/storage/r2"
-	_ "github.com/tawanorg/claude-sync/internal/storage/s3"
+	_ "github.com/gilangmlr/claude-sync/internal/storage/gcs"
+	_ "github.com/gilangmlr/claude-sync/internal/storage/r2"
+	_ "github.com/gilangmlr/claude-sync/internal/storage/s3"
 )
 
 const defaultWorkers = 10

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tawanorg/claude-sync/internal/config"
+	"github.com/gilangmlr/claude-sync/internal/config"
 )
 
 type FileState struct {
